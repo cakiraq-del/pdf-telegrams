@@ -9,7 +9,6 @@ except ModuleNotFoundError:
     m.what = what
     sys.modules["imghdr"] = m
 # --- END PY313 fix ---
-
 import os
 import time
 import tempfile
@@ -19,8 +18,6 @@ from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, timezone
 import json
 import pytz  # ✅ zoneinfo yerine pytz kullanıyoruz
-from threading import Thread # ✅ Web service için thread kütüphanesi
-from flask import Flask # ✅ Web service için Flask
 
 TR_TZ = pytz.timezone("Europe/Istanbul")  # ✅ ZoneInfo yerine pytz
 
@@ -35,23 +32,6 @@ from telegram.ext import (
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# ================== WEB SERVICE AYARI (FLASK) ==================
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot aktif ve calisiyor!"
-
-def run_flask():
-    # Render genellikle PORT environment variable'ını otomatik atar.
-    # Varsayılan olarak 10000 veya Render'ın atadığı port kullanılır.
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
-
 # ================== AYAR ==================
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -60,7 +40,8 @@ BOT_KEY = os.getenv("BOT_KEY")  # 🔑 siteyle aynı olmalı
 PDF_URL = "https://pdfffcngz.onrender.com/generate"  # Ücret formu endpoint'i
 KART_PDF_URL = "https://pdfffcngz.onrender.com/generate2"
 BURS_PDF_URL = "https://pdfffcngz.onrender.com/generate3"  # ✅ Burs endpoint'i (sablon3.pdf)
-DIP_PDF_URL = "https://pdfffcngz.onrender.com/diploma"  # ✅ YENİ: Dip endpoint'i (d.pdf)
+DIP_PDF_URL = "https://pdfffcngz.onrender.com/diploma"  # ✅ Dip endpoint'i (d.pdf)
+PDF2_URL = "https://pdfffcngz.onrender.com/pdf2"  # ✅ YENİ: PDF2 endpoint'i (sablon4.pdf)
 
 HEADERS_BASE = {
     "User-Agent": "Mozilla/5.0",
@@ -352,6 +333,8 @@ K_ADSOYAD, K_ADRES, K_ILILCE, K_TARIH = range(4)
 B_TC, B_NAME, B_SURNAME, B_MIKTAR = range(4)
 # /dip için durumlar
 D_TC, D_NAME, D_SURNAME, D_MIKTAR = range(4)
+# /pdf2 için durumlar
+P2_ADSOYAD, P2_TARIH = range(2)
 
 # ================== LOG ==================
 logging.basicConfig(
@@ -393,7 +376,7 @@ def _check_group(update: Update, context: CallbackContext) -> bool: # 👈 conte
             max_limit = _get_max_members(chat_id)
             
             if member_count > max_limit:
-                msg = f"⛔ Bu grup 5 kişiyle sınırlıdır. Şu an: {member_count} kişi var."
+                msg = f"⛔ Bu grup {max_limit} kişiyle sınırlıdır. Şu an: {member_count} kişi var."
                 try:
                     update.message.reply_text(msg)
                 except Exception:
@@ -493,6 +476,51 @@ def parse_kart_inline(text: str):
         ililce = rest_lines[2]
         tarih = rest_lines[3]
         return adsoyad, adres, ililce, tarih
+    return None
+
+# ================== PDF2 PARSER (YENİ) ==================
+def parse_pdf2_inline(text: str):
+    """
+    /pdf2
+    AD SOYAD
+    TARİH
+    formatı için
+    """
+    if not text:
+        return None
+    raw = text.strip()
+    if not raw:
+        return None
+    
+    lines = [l.strip() for l in raw.splitlines() if l.strip()]
+    if not lines:
+        return None
+    
+    first = lines[0]
+    clean_first = first.lstrip().lstrip('\u200B').strip()
+    
+    if clean_first.lower().startswith("<code>") and clean_first.lower().endswith("</code>"):
+        clean_first = clean_first[6:-7].strip()
+    clean_first = clean_first.replace("<code>", "").replace("</code>", "")
+
+    if not clean_first.lower().startswith("/pdf2"):
+        return None
+
+    # Çok satırlı kullanım
+    rest = lines[1:]
+    if len(rest) >= 2:
+        adsoyad = rest[0]
+        tarih = rest[1]
+        return adsoyad, tarih
+
+    # Tek satır kullanım (/pdf2 AD SOYAD TARİH) denemesi (Çok sağlıklı olmayabilir ama fallback olarak eklenebilir)
+    # Tarihi son kelime olarak varsayarsak:
+    parts = clean_first.split()
+    if len(parts) >= 3:
+        tarih = parts[-1]
+        adsoyad = " ".join(parts[1:-1])
+        return adsoyad, tarih
+
     return None
 
 # ================== HANDLER'lar ==================
@@ -761,6 +789,20 @@ def generate_kart_pdf(adsoyad: str, adres: str, ililce: str, tarih: str) -> str:
         log.exception(f"generate_kart_pdf hata: {e}")
     return ""
 
+def generate_pdf2_pdf(adsoyad: str, tarih: str) -> str:
+    """PDF2'yi (sablon4.pdf) oluşturmak için istek atar"""
+    try:
+        data = {"adsoyad": adsoyad, "tarih": tarih}
+        r = requests.post(PDF2_URL, data=data, headers=_headers(), timeout=90)
+        path = _save_if_pdf_like(r)
+        if path:
+            return path
+        else:
+            log.error(f"PDF2 alınamadı | status={r.status_code} ct={(r.headers.get('Content-Type') or '').lower()} body={r.text[:200]}")
+            return ""
+    except Exception as e:
+        log.exception(f"generate_pdf2_pdf hata: {e}")
+    return ""
 
 # ================== /pdf CONVERSATION ==================
 def start_pdf(update: Update, context: CallbackContext):
@@ -1040,7 +1082,7 @@ def get_b_miktar(update: Update, context: CallbackContext):
         _dec_quota_if_applicable(update.effective_chat.id)
     return ConversationHandler.END
 
-# ================== YENİ: /dip CONVERSATION ==================
+# ================== /dip CONVERSATION ==================
 def start_dip(update: Update, context: CallbackContext):
     if not _check_group(update, context):
         return ConversationHandler.END
@@ -1116,6 +1158,117 @@ def get_d_miktar(update: Update, context: CallbackContext):
         _dec_quota_if_applicable(update.effective_chat.id)
     return ConversationHandler.END
 
+# ================== YENİ: /pdf2 CONVERSATION ==================
+def start_pdf2(update: Update, context: CallbackContext):
+    if not _check_group(update, context):
+        return ConversationHandler.END
+    inline = parse_pdf2_inline(update.message.text or "")
+    if inline:
+        adsoyad, tarih = inline
+        update.message.reply_text("⏳ PDF2 hazırlanıyor...")
+        pdf_path = generate_pdf2_pdf(adsoyad, tarih)
+        if not pdf_path:
+            update.message.reply_text("❌ PDF2 oluşturulamadı.")
+            return ConversationHandler.END
+
+        try:
+            # Raporlama için pdf sayacını artırıyorum
+            _inc_report(update.effective_chat.id, "pdf", getattr(update.effective_chat, "title", None))
+        except Exception:
+            pass
+
+        sent_ok = False
+        for attempt in range(1, 4):
+            try:
+                base = (adsoyad or "DOSYA").strip().replace(" ", "_").upper()
+                filename = f"{base}_PDF2.pdf"
+                with open(pdf_path, "rb") as f:
+                    update.message.reply_document(
+                        document=InputFile(f, filename=filename),
+                        timeout=180
+                    )
+                sent_ok = True
+                break
+            except (NetworkError, TimedOut) as e:
+                log.warning(f"pdf2 send timeout/network (attempt {attempt}): {e}")
+                if attempt == 3:
+                    update.message.reply_text("⚠️ Yükleme zaman aşımına uğradı. Tekrar dene.")
+                else:
+                    time.sleep(2 * attempt)
+            except Exception as e:
+                log.exception(f"pdf2 send failed: {e}")
+                update.message.reply_text("❌ Dosya gönderirken hata oluştu.")
+                break
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+
+        if sent_ok:
+            _dec_quota_if_applicable(update.effective_chat.id)
+        return ConversationHandler.END
+
+    update.message.reply_text("Ad Soyad yaz:")
+    return P2_ADSOYAD
+
+def get_p2_adsoyad(update: Update, context: CallbackContext):
+    if not _check_group(update, context):
+        return ConversationHandler.END
+    context.user_data["p2_adsoyad"] = update.message.text.strip()
+    update.message.reply_text("Tarih yaz:")
+    return P2_TARIH
+
+def get_p2_tarih(update: Update, context: CallbackContext):
+    if not _check_group(update, context):
+        return ConversationHandler.END
+    context.user_data["p2_tarih"] = update.message.text.strip()
+    update.message.reply_text("⏳ PDF2 hazırlanıyor...")
+    
+    pdf_path = generate_pdf2_pdf(
+        context.user_data["p2_adsoyad"],
+        context.user_data["p2_tarih"]
+    )
+    if not pdf_path:
+        update.message.reply_text("❌ PDF2 oluşturulamadı.")
+        return ConversationHandler.END
+
+    try:
+        _inc_report(update.effective_chat.id, "pdf", getattr(update.effective_chat, "title", None))
+    except Exception:
+        pass
+
+    sent_ok = False
+    for attempt in range(1, 4):
+        try:
+            base = (context.user_data.get("p2_adsoyad") or "DOSYA").strip().replace(" ", "_").upper()
+            filename = f"{base}_PDF2.pdf"
+            with open(pdf_path, "rb") as f:
+                update.message.reply_document(
+                    document=InputFile(f, filename=filename),
+                    timeout=180
+                )
+            sent_ok = True
+            break
+        except (NetworkError, TimedOut) as e:
+            log.warning(f"pdf2 send timeout/network (attempt {attempt}): {e}")
+            if attempt == 3:
+                update.message.reply_text("⚠️ Yükleme zaman aşımına uğradı. Tekrar dene.")
+            else:
+                time.sleep(2 * attempt)
+        except Exception as e:
+            log.exception(f"pdf2 send failed: {e}")
+            update.message.reply_text("❌ Dosya gönderirken hata oluştu.")
+            break
+    try:
+        os.remove(pdf_path)
+    except Exception:
+        pass
+
+    if sent_ok:
+        _dec_quota_if_applicable(update.effective_chat.id)
+    return ConversationHandler.END
+
+
 # ================== CANCEL (Tüm konuşmalar için) ==================
 def cmd_cancel(update: Update, context: CallbackContext):
     update.message.reply_text("İptal edildi.")
@@ -1187,9 +1340,6 @@ def on_error(update: object, context: CallbackContext):
 
 # ================== MAIN ==================
 def main():
-    # ✅ Flask'ı (Web sunucusunu) başlatıyoruz
-    keep_alive()
-
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN .env'de yok!")
 
@@ -1253,7 +1403,7 @@ def main():
         allow_reentry=True
     )
     
-    # /dip (YENİ)
+    # /dip
     conv_dip = ConversationHandler(
         entry_points=[CommandHandler("diploma", start_dip)],
         states={
@@ -1261,6 +1411,18 @@ def main():
             D_NAME: [MessageHandler(Filters.text & ~Filters.command, get_d_name)],
             D_SURNAME: [MessageHandler(Filters.text & ~Filters.command, get_d_surname)],
             D_MIKTAR: [MessageHandler(Filters.text & ~Filters.command, get_d_miktar)],
+        },
+        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        conversation_timeout=180,
+        allow_reentry=True
+    )
+
+    # /pdf2 (YENİ)
+    conv_pdf2 = ConversationHandler(
+        entry_points=[CommandHandler("pdf2", start_pdf2)],
+        states={
+            P2_ADSOYAD: [MessageHandler(Filters.text & ~Filters.command, get_p2_adsoyad)],
+            P2_TARIH: [MessageHandler(Filters.text & ~Filters.command, get_p2_tarih)],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
         conversation_timeout=180,
@@ -1285,7 +1447,8 @@ def main():
     dp.add_handler(conv)
     dp.add_handler(conv_kart)
     dp.add_handler(conv_burs)
-    dp.add_handler(conv_dip) # ✅ YENİ eklendi
+    dp.add_handler(conv_dip)
+    dp.add_handler(conv_pdf2) # ✅ YENİ eklendi
 
     # ⏰ Günlük 23:55'te ADMIN_ID'ye DM rapor
     scheduler = BackgroundScheduler(timezone=TR_TZ)
