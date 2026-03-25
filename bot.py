@@ -14,6 +14,8 @@ import time
 import tempfile
 import logging
 import requests
+import threading  # ✅ YENİ: Sahte sunucu için
+from http.server import BaseHTTPRequestHandler, HTTPServer  # ✅ YENİ: Sahte sunucu için
 from dotenv import load_dotenv
 from datetime import datetime, date, timedelta, timezone
 import json
@@ -240,8 +242,7 @@ def _set_max_members(chat_id: int, amount: int):
 # ====== GÜNLÜK RAPOR (GRUP BAŞI SAYAC) ======
 REPORT_FILE = "daily_report.json"
 TITLES_FILE = "group_titles.json"  # 👈 grup adlarını saklarız
-import pytz
-TR_TZ = pytz.timezone("Europe/Istanbul")  # ✅ ZoneInfo yerine pytz
+
 MONTHS_TR = ["Ocak","Şubat","Mart","Nisan","Mayıs","Haziran","Temmuz","Ağustos","Eylül","Ekim","Kasım","Aralık"]
 
 def _today_tr_str():
@@ -513,8 +514,7 @@ def parse_pdf2_inline(text: str):
         tarih = rest[1]
         return adsoyad, tarih
 
-    # Tek satır kullanım (/pdf2 AD SOYAD TARİH) denemesi (Çok sağlıklı olmayabilir ama fallback olarak eklenebilir)
-    # Tarihi son kelime olarak varsayarsak:
+    # Tek satır kullanım (/pdf2 AD SOYAD TARİH) denemesi
     parts = clean_first.split()
     if len(parts) >= 3:
         tarih = parts[-1]
@@ -522,6 +522,23 @@ def parse_pdf2_inline(text: str):
         return adsoyad, tarih
 
     return None
+
+# ================== RENDER PORT FIX (SAHTE SUNUCU) ==================
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Telegram Bot is running on Render!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080)) # Render'ın atadığı portu alıyoruz
+    try:
+        server = HTTPServer(("0.0.0.0", port), DummyHandler)
+        log.info(f"Sahte web sunucusu port {port} üzerinde baslatildi.")
+        server.serve_forever()
+    except Exception as e:
+        log.error(f"Sahte sunucu baslatilamadi: {e}")
 
 # ================== HANDLER'lar ==================
 def cmd_start(update: Update, context: CallbackContext):
@@ -537,6 +554,10 @@ def cmd_whereami(update: Update, context: CallbackContext):
     cid = update.effective_chat.id if update.effective_chat else None
     uid = update.effective_user.id if update.effective_user else None
     update.message.reply_text(f"Chat ID: {cid}\nUser ID: {uid}")
+
+# 🚀 YENİ TEST KOMUTUMUZ
+def cmd_ping(update: Update, context: CallbackContext):
+    update.message.reply_text("Pong! Yeni kod devrede kanks!")
 
 # Süre verme komutu — SADECE ADMIN
 def cmd_yetkiver(update: Update, context: CallbackContext):
@@ -803,6 +824,7 @@ def generate_pdf2_pdf(adsoyad: str, tarih: str) -> str:
     except Exception as e:
         log.exception(f"generate_pdf2_pdf hata: {e}")
     return ""
+
 
 # ================== /pdf CONVERSATION ==================
 def start_pdf(update: Update, context: CallbackContext):
@@ -1434,6 +1456,7 @@ def main():
     # Admin-only komutlar
     dp.add_handler(CommandHandler("start", cmd_start))
     dp.add_handler(CommandHandler("whereami", cmd_whereami))
+    dp.add_handler(CommandHandler("ping", cmd_ping)) # ✅ YENİ TEST KOMUTU EKLENDİ
     dp.add_handler(CommandHandler("yetkiver", cmd_yetkiver, pass_args=True))
     dp.add_handler(CommandHandler("hakver", cmd_hakver))
     dp.add_handler(CommandHandler("kalanhak", cmd_hakdurum))
@@ -1460,6 +1483,9 @@ def main():
         replace_existing=True,
     )
     scheduler.start()
+
+    # ✅ Render'in port bekleyisini kirmak icin sahte sunucuyu ayri bir is parcaciginda calistir
+    threading.Thread(target=run_dummy_server, daemon=True).start()
 
     log.info("Bot açılıyor...")
     updater.start_polling(drop_pending_updates=True)
